@@ -27,44 +27,57 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: platform-tools
 
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y unzip
-
-      - name: Extract ZIP
+      - name: Install unzip
         run: |
-          mkdir extracted
+          sudo apt-get update
+          sudo apt-get install -y unzip
+
+      - name: Verify and extract source ZIP
+        run: |
+          test -f Horizen-final.zip
+          mkdir -p extracted
           unzip -q Horizen-final.zip -d extracted
           echo "ZIP extracted successfully"
-          find extracted -maxdepth 4 -type f | head -100
+          find extracted -maxdepth 5 -type f | head -150
 
-      - name: Find Android project
+      - name: Find Android Gradle project
         id: project
         shell: bash
         run: |
           FILE=$(find extracted -type f \
             \( -name settings.gradle -o -name settings.gradle.kts \) \
-            | head -1)
+            -print -quit)
 
-          if [ -n "$FILE" ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "dir=$(dirname "$FILE")" >> "$GITHUB_OUTPUT"
-          else
+          if [ -z "$FILE" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No Android Gradle project found."
+            exit 0
           fi
 
-      - name: Build Android APK
+          PROJECT_DIR="$(dirname "$FILE")"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Found project: $PROJECT_DIR"
+
+      - name: Build debug APK
         if: steps.project.outputs.found == 'true'
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           if [ -f gradlew ]; then
             chmod +x gradlew
             ./gradlew --no-daemon assembleDebug
-          else
+          elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
             gradle --no-daemon assembleDebug
+          else
+            echo "Gradle build file missing."
+            exit 1
           fi
 
-      - name: Prepare APK
+      - name: Collect APK
         if: steps.project.outputs.found == 'true'
         run: |
           mkdir -p apk-output
@@ -72,17 +85,24 @@ jobs:
             -path '*/build/outputs/apk/debug/*.apk' \
             -exec cp {} apk-output/ \;
 
-          test -n "$(find apk-output -name '*.apk' -print -quit)"
+          if ! find apk-output -type f -name '*.apk' \
+            -print -quit | grep -q .; then
+            echo "APK was not generated."
+            exit 1
+          fi
 
-      - name: Stop if Android project is missing
+          ls -lh apk-output
+
+      - name: Explain missing Android project
         if: steps.project.outputs.found != 'true'
         run: |
-          echo "::error::No Android Gradle project found in Horizen-final.zip."
-          echo "This ZIP may contain only HTML/CSS/JavaScript."
-          echo "A suitable Android wrapper must be created before building an APK."
+          echo "::error::No Android Gradle project was found in Horizen-final.zip."
+          echo "The ZIP may contain HTML, CSS, and JavaScript only."
+          echo "An Android wrapper is required to build an APK."
           exit 1
 
-      - name: Upload APK
+      - name: Upload APK artifact
+        if: steps.project.outputs.found == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Horizon-One-V2-APK
