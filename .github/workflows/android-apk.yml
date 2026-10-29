@@ -1,0 +1,92 @@
+
+name: Build Horizon One V2 APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Horizen-final.zip'
+      - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y unzip
+
+      - name: Extract ZIP
+        run: |
+          mkdir extracted
+          unzip -q Horizen-final.zip -d extracted
+          echo "ZIP extracted successfully"
+          find extracted -maxdepth 4 -type f | head -100
+
+      - name: Find Android project
+        id: project
+        shell: bash
+        run: |
+          FILE=$(find extracted -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            | head -1)
+
+          if [ -n "$FILE" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "dir=$(dirname "$FILE")" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Android APK
+        if: steps.project.outputs.found == 'true'
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon assembleDebug
+          else
+            gradle --no-daemon assembleDebug
+          fi
+
+      - name: Prepare APK
+        if: steps.project.outputs.found == 'true'
+        run: |
+          mkdir -p apk-output
+          find extracted -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -exec cp {} apk-output/ \;
+
+          test -n "$(find apk-output -name '*.apk' -print -quit)"
+
+      - name: Stop if Android project is missing
+        if: steps.project.outputs.found != 'true'
+        run: |
+          echo "::error::No Android Gradle project found in Horizen-final.zip."
+          echo "This ZIP may contain only HTML/CSS/JavaScript."
+          echo "A suitable Android wrapper must be created before building an APK."
+          exit 1
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Horizon-One-V2-APK
+          path: apk-output/*.apk
+          if-no-files-found: error
+          retention-days: 14
+          
