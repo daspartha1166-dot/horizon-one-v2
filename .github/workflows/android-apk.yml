@@ -31,18 +31,39 @@ jobs:
           accept-android-sdk-licenses: true
           packages: platform-tools
 
+      - name: Create Android debug keystore
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair \
+              -v \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          fi
+
+          test -f "$HOME/.android/debug.keystore"
+
       - name: Install unzip
         run: |
           sudo apt-get update
           sudo apt-get install -y unzip
 
-      - name: Verify and extract source ZIP
+      - name: Extract source ZIP
         run: |
           test -f Horizen-final.zip
           mkdir -p extracted
           unzip -q Horizen-final.zip -d extracted
-          echo "ZIP extracted successfully"
-          find extracted -maxdepth 5 -type f | head -150
+
+          echo "Extracted project files:"
+          find extracted -maxdepth 3 -type f | head -100
 
       - name: Find Android Gradle project
         id: project
@@ -53,56 +74,46 @@ jobs:
             -print -quit)
 
           if [ -z "$FILE" ]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No Android Gradle project found."
-            exit 0
+            echo "No Android Gradle project found in ZIP."
+            exit 1
           fi
 
           PROJECT_DIR="$(dirname "$FILE")"
-          echo "found=true" >> "$GITHUB_OUTPUT"
+
+          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
+            echo "Gradle wrapper not found in $PROJECT_DIR"
+            exit 1
+          fi
+
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Found project: $PROJECT_DIR"
 
       - name: Build debug APK
-        if: steps.project.outputs.found == 'true'
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            ./gradlew --no-daemon assembleDebug
-          elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
-            gradle --no-daemon assembleDebug
-          else
-            echo "Gradle build file missing."
-            exit 1
-          fi
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
 
-      - name: Collect APK
-        if: steps.project.outputs.found == 'true'
+      - name: Collect APK files
+        shell: bash
         run: |
           mkdir -p apk-output
+
           find extracted -type f \
-            -path '*/build/outputs/apk/debug/*.apk' \
+            -path '*/build/outputs/apk/*' \
+            -name '*.apk' \
             -exec cp {} apk-output/ \;
 
           if ! find apk-output -type f -name '*.apk' \
             -print -quit | grep -q .; then
-            echo "APK was not generated."
+            echo "Build finished but no APK was found."
+            find extracted -type d -path '*/build/outputs/*' -print
             exit 1
           fi
 
           ls -lh apk-output
 
-      - name: Explain missing Android project
-        if: steps.project.outputs.found != 'true'
-        run: |
-          echo "::error::No Android Gradle project was found in Horizen-final.zip."
-          echo "The ZIP may contain HTML, CSS, and JavaScript only."
-          echo "An Android wrapper is required to build an APK."
-          exit 1
-
       - name: Upload APK artifact
-        if: steps.project.outputs.found == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Horizon-One-V2-APK
