@@ -106,10 +106,9 @@ jobs:
                   raise SystemExit(f"Package declaration missing: {path}")
               missing = [item for item in imports if item not in content.splitlines()]
               if missing:
-                  content = content.replace(package_line, package_line + "\n" + "\n".join(missing), 1)
+                  content = content.replace(package_line, package_line + "\\n" + "\\n".join(missing), 1)
                   path.write_text(content)
 
-          # This source ZIP uses the older Compose opt-in marker for FlowRow/FlowColumn.
           for relative in [
               "app/src/main/kotlin/com/metrolist/music/ui/onboarding/OnboardingScreen.kt",
               "app/src/main/kotlin/com/metrolist/music/ui/profile/ProfileScreen.kt",
@@ -125,7 +124,7 @@ jobs:
                       raise SystemExit(f"Package declaration missing: {path}")
                   content = content.replace(
                       package_line,
-                      package_line + "\nimport androidx.compose.foundation.ExperimentalFoundationApi",
+                      package_line + "\\nimport androidx.compose.foundation.ExperimentalFoundationApi",
                       1,
                   )
               path.write_text(content)
@@ -138,23 +137,24 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
-      - name: Collect APK files
+      - name: Collect FOSS APK only
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p apk-output
-          find extracted -type f -path '*/build/outputs/apk/*' -name '*.apk' -exec cp {} apk-output/ \;
-          if ! find apk-output -type f -name '*.apk' -print -quit | grep -q .; then
-            echo "Build finished but no APK was found."
-            find extracted -type d -path '*/build/outputs/*' -print
+          FOSS_APK=$(find extracted -type f -path '*/build/outputs/apk/*' -name 'app-foss-debug.apk' -print -quit)
+          if [ -z "$FOSS_APK" ]; then
+            echo "FOSS debug APK was not produced."
+            find extracted -type f -path '*/build/outputs/apk/*' -name '*.apk' -print
             exit 1
           fi
-          ls -lh apk-output
+          cp "$FOSS_APK" apk-output/Horizen-FOSS-debug.apk
+          ls -lh apk-output/Horizen-FOSS-debug.apk
 
-      - name: Upload APK artifact
+      - name: Upload FOSS APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Horizon-One-V2-APK
-          path: apk-output/*.apk
+          name: Horizen-FOSS-APK
+          path: apk-output/Horizen-FOSS-debug.apk
           if-no-files-found: error
           retention-days: 14
