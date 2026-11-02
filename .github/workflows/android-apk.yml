@@ -101,6 +101,54 @@ jobs:
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Found project: $PROJECT_DIR"
 
+      - name: Patch missing Jetpack Compose imports
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          fixes = {
+              "app/src/main/kotlin/com/metrolist/music/ui/detail/AlbumScreen.kt": [
+                  "import androidx.compose.ui.unit.dp"
+              ],
+              "app/src/main/kotlin/com/metrolist/music/ui/detail/LocalPlaylistScreen.kt": [
+                  "import androidx.compose.ui.unit.dp"
+              ],
+              "app/src/main/kotlin/com/metrolist/music/ui/detail/PlaylistScreen.kt": [
+                  "import androidx.compose.ui.unit.dp"
+              ],
+              "app/src/main/kotlin/com/metrolist/music/ui/onboarding/OnboardingScreen.kt": [
+                  "import androidx.compose.foundation.layout.ExperimentalLayoutApi"
+              ],
+              "app/src/main/kotlin/com/metrolist/music/ui/profile/ProfileScreen.kt": [
+                  "import androidx.compose.foundation.layout.ExperimentalLayoutApi"
+              ],
+          }
+
+          for relative, imports in fixes.items():
+              path = Path(relative)
+              if not path.is_file():
+                  raise SystemExit(f"Expected source file missing: {path}")
+              content = path.read_text()
+              package_line = next(
+                  (line for line in content.splitlines() if line.startswith("package ")),
+                  None,
+              )
+              if package_line is None:
+                  raise SystemExit(f"Package declaration missing: {path}")
+              missing = [item for item in imports if item not in content.splitlines()]
+              if missing:
+                  content = content.replace(
+                      package_line,
+                      package_line + "\\n" + "\\n".join(missing),
+                      1,
+                  )
+                  path.write_text(content)
+              print(f"Checked imports: {path}")
+          PY
+
       - name: Build debug APK
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
