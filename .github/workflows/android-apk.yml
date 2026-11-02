@@ -142,7 +142,7 @@ jobs:
               if missing:
                   content = content.replace(
                       package_line,
-                      package_line + "\\n" + "\\n".join(missing),
+                      package_line + "\n" + "\n".join(missing),
                       1,
                   )
                   path.write_text(content)
