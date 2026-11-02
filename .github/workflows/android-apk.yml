@@ -1,4 +1,3 @@
-
 name: Build Horizon One V2 APK
 
 on:
@@ -35,20 +34,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$HOME/.android"
-
           if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair \
-              -v \
-              -keystore "$HOME/.android/debug.keystore" \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US" \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000
+            keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
           fi
-
           test -f "$HOME/.android/debug.keystore"
 
       - name: Install unzip
@@ -60,20 +48,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           ZIP_FILE="Horizen-final (1).zip"
-
           if [ ! -f "$ZIP_FILE" ]; then
             echo "Source ZIP not found: $ZIP_FILE"
-            echo "Available ZIP files:"
             find . -maxdepth 1 -type f -iname '*.zip' -print
             exit 1
           fi
-
           mkdir -p extracted
           unzip -q "$ZIP_FILE" -d extracted
-
-          echo "Extracted project files:"
           find extracted -maxdepth 3 -type f | head -100
 
       - name: Find Android Gradle project
@@ -81,23 +63,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          FILE=$(find extracted -type f \
-            \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -print -quit)
-
+          FILE=$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
           if [ -z "$FILE" ]; then
             echo "No Android Gradle project found in ZIP."
             exit 1
           fi
-
           PROJECT_DIR="$(dirname "$FILE")"
-
           if [ ! -f "$PROJECT_DIR/gradlew" ]; then
             echo "Gradle wrapper not found in $PROJECT_DIR"
             exit 1
           fi
-
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Found project: $PROJECT_DIR"
 
@@ -119,12 +94,6 @@ jobs:
               "app/src/main/kotlin/com/metrolist/music/ui/detail/PlaylistScreen.kt": [
                   "import androidx.compose.ui.unit.dp"
               ],
-              "app/src/main/kotlin/com/metrolist/music/ui/onboarding/OnboardingScreen.kt": [
-                  "import androidx.compose.foundation.layout.ExperimentalLayoutApi"
-              ],
-              "app/src/main/kotlin/com/metrolist/music/ui/profile/ProfileScreen.kt": [
-                  "import androidx.compose.foundation.layout.ExperimentalLayoutApi"
-              ],
           }
 
           for relative, imports in fixes.items():
@@ -132,21 +101,35 @@ jobs:
               if not path.is_file():
                   raise SystemExit(f"Expected source file missing: {path}")
               content = path.read_text()
-              package_line = next(
-                  (line for line in content.splitlines() if line.startswith("package ")),
-                  None,
-              )
+              package_line = next((line for line in content.splitlines() if line.startswith("package ")), None)
               if package_line is None:
                   raise SystemExit(f"Package declaration missing: {path}")
               missing = [item for item in imports if item not in content.splitlines()]
               if missing:
+                  content = content.replace(package_line, package_line + "\\n" + "\\n".join(missing), 1)
+                  path.write_text(content)
+
+          # This source ZIP uses the older Compose opt-in marker for FlowRow/FlowColumn.
+          for relative in [
+              "app/src/main/kotlin/com/metrolist/music/ui/onboarding/OnboardingScreen.kt",
+              "app/src/main/kotlin/com/metrolist/music/ui/profile/ProfileScreen.kt",
+          ]:
+              path = Path(relative)
+              if not path.is_file():
+                  raise SystemExit(f"Expected source file missing: {path}")
+              content = path.read_text()
+              content = content.replace("ExperimentalLayoutApi", "ExperimentalFoundationApi")
+              if "import androidx.compose.foundation.ExperimentalFoundationApi" not in content.splitlines():
+                  package_line = next((line for line in content.splitlines() if line.startswith("package ")), None)
+                  if package_line is None:
+                      raise SystemExit(f"Package declaration missing: {path}")
                   content = content.replace(
                       package_line,
-                      package_line + "\n" + "\n".join(missing),
+                      package_line + "\\nimport androidx.compose.foundation.ExperimentalFoundationApi",
                       1,
                   )
-                  path.write_text(content)
-              print(f"Checked imports: {path}")
+              path.write_text(content)
+              print(f"Applied legacy Compose opt-in compatibility: {path}")
           PY
 
       - name: Build debug APK
@@ -159,23 +142,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p apk-output
-
-          find extracted -type f \
-            -path '*/build/outputs/apk/*' \
-            -name '*.apk' \
-            -exec cp {} apk-output/ \;
-
-          if ! find apk-output -type f -name '*.apk' \
-            -print -quit | grep -q .; then
+          find extracted -type f -path '*/build/outputs/apk/*' -name '*.apk' -exec cp {} apk-output/ \;
+          if ! find apk-output -type f -name '*.apk' -print -quit | grep -q .; then
             echo "Build finished but no APK was found."
-            find extracted -type d \
-              -path '*/build/outputs/*' -print
+            find extracted -type d -path '*/build/outputs/*' -print
             exit 1
           fi
-
-          echo "APK files generated:"
           ls -lh apk-output
 
       - name: Upload APK artifact
@@ -185,4 +158,3 @@ jobs:
           path: apk-output/*.apk
           if-no-files-found: error
           retention-days: 14
-          
