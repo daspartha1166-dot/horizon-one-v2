@@ -106,7 +106,7 @@ jobs:
                   raise SystemExit(f"Package declaration missing: {path}")
               missing = [item for item in imports if item not in content.splitlines()]
               if missing:
-                  content = content.replace(package_line, package_line + "\\n" + "\\n".join(missing), 1)
+                  content = content.replace(package_line, package_line + "\n" + "\n".join(missing), 1)
                   path.write_text(content)
 
           for relative in [
@@ -124,7 +124,7 @@ jobs:
                       raise SystemExit(f"Package declaration missing: {path}")
                   content = content.replace(
                       package_line,
-                      package_line + "\\nimport androidx.compose.foundation.ExperimentalFoundationApi",
+                      package_line + "\nimport androidx.compose.foundation.ExperimentalFoundationApi",
                       1,
                   )
               path.write_text(content)
