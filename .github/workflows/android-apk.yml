@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'Horizen-final.zip'
+      - '*.zip'
       - '.github/workflows/android-apk.yml'
 
 permissions:
@@ -57,10 +57,21 @@ jobs:
           sudo apt-get install -y unzip
 
       - name: Extract source ZIP
+        shell: bash
         run: |
-          test -f Horizen-final.zip
+          set -euo pipefail
+
+          ZIP_FILE="Horizen-final (1).zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "Source ZIP not found: $ZIP_FILE"
+            echo "Available ZIP files:"
+            find . -maxdepth 1 -type f -iname '*.zip' -print
+            exit 1
+          fi
+
           mkdir -p extracted
-          unzip -q Horizen-final.zip -d extracted
+          unzip -q "$ZIP_FILE" -d extracted
 
           echo "Extracted project files:"
           find extracted -maxdepth 3 -type f | head -100
@@ -69,6 +80,8 @@ jobs:
         id: project
         shell: bash
         run: |
+          set -euo pipefail
+
           FILE=$(find extracted -type f \
             \( -name settings.gradle -o -name settings.gradle.kts \) \
             -print -quit)
@@ -89,9 +102,10 @@ jobs:
           echo "Found project: $PROJECT_DIR"
 
       - name: Fix Compose State delegate import
-        working-directory: .
         shell: bash
         run: |
+          set -euo pipefail
+
           PROJECT="${{ steps.project.outputs.dir }}"
           FILE=$(find "$PROJECT" -type f \
             -name DownloadComponents.kt -print -quit)
@@ -113,6 +127,7 @@ jobs:
 
           if required not in source and wildcard not in source:
               lines = source.splitlines()
+
               package_index = next(
                   (i for i, line in enumerate(lines)
                    if line.startswith("package ")),
@@ -120,14 +135,18 @@ jobs:
               )
 
               if package_index is None:
-                  raise SystemExit("Kotlin package declaration not found.")
+                  raise SystemExit(
+                      "Kotlin package declaration not found."
+                  )
 
               lines.insert(package_index + 1, "")
               lines.insert(package_index + 2, required)
+
               path.write_text(
                   "\n".join(lines) + "\n",
                   encoding="utf-8"
               )
+
               print("Added Compose getValue import.")
           else:
               print("Compose runtime import already exists.")
@@ -144,6 +163,8 @@ jobs:
       - name: Collect APK files
         shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p apk-output
 
           find extracted -type f \
@@ -154,10 +175,12 @@ jobs:
           if ! find apk-output -type f -name '*.apk' \
             -print -quit | grep -q .; then
             echo "Build finished but no APK was found."
-            find extracted -type d -path '*/build/outputs/*' -print
+            find extracted -type d \
+              -path '*/build/outputs/*' -print
             exit 1
           fi
 
+          echo "APK files generated:"
           ls -lh apk-output
 
       - name: Upload APK artifact
