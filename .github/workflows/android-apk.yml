@@ -1,4 +1,4 @@
-name: Build Horizon One V2 APK
+name: Horizen Release Pipeline
 
 on:
   workflow_dispatch:
@@ -10,14 +10,25 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: horizen-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  audit-and-build:
+    name: Source audit, tests and APK verification
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install archive and Android tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip zip
+          
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -30,131 +41,144 @@ jobs:
           accept-android-sdk-licenses: true
           packages: platform-tools
 
-      - name: Create Android debug keystore
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
-          fi
-          test -f "$HOME/.android/debug.keystore"
-
-      - name: Install unzip
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip
-
-      - name: Extract source ZIP
+      - name: Validate and extract uploaded source
+        id: source
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="Horizen-final (1).zip"
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "Source ZIP not found: $ZIP_FILE"
-            find . -maxdepth 1 -type f -iname '*.zip' -print
+          ZIP_FILE="$(find . -maxdepth 1 -type f -iname '*.zip' -print -quit)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "::error::No source ZIP found in repository root."
             exit 1
           fi
+          unzip -t "$ZIP_FILE"
           mkdir -p extracted
           unzip -q "$ZIP_FILE" -d extracted
-          find extracted -maxdepth 3 -type f | head -100
-
-      - name: Find Android Gradle project
-        id: project
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE=$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
-          if [ -z "$FILE" ]; then
-            echo "No Android Gradle project found in ZIP."
+          SETTINGS="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::No Gradle settings file found in uploaded ZIP."
             exit 1
           fi
-          PROJECT_DIR="$(dirname "$FILE")"
+          PROJECT_DIR="$(dirname "$SETTINGS")"
           if [ ! -f "$PROJECT_DIR/gradlew" ]; then
-            echo "Gradle wrapper not found in $PROJECT_DIR"
+            echo "::error::Gradle wrapper missing from $PROJECT_DIR."
             exit 1
           fi
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Found project: $PROJECT_DIR"
+          echo "Source project: $PROJECT_DIR"
 
-      - name: Patch missing Jetpack Compose imports
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Audit source structure, branding and integrations
+        id: audit
+        working-directory: ${{ steps.source.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/audit-report"
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          fixes = {
-              "app/src/main/kotlin/com/metrolist/music/ui/detail/AlbumScreen.kt": [
-                  "import androidx.compose.ui.unit.dp"
-              ],
-              "app/src/main/kotlin/com/metrolist/music/ui/detail/LocalPlaylistScreen.kt": [
-                  "import androidx.compose.ui.unit.dp"
-              ],
-              "app/src/main/kotlin/com/metrolist/music/ui/detail/PlaylistScreen.kt": [
-                  "import androidx.compose.ui.unit.dp"
-              ],
+          root = Path(".")
+          files = [p for p in root.rglob("*") if p.is_file() and ".gradle" not in p.parts and "build" not in p.parts]
+          text_ext = {".kt", ".kts", ".java", ".xml", ".json", ".properties", ".gradle", ".md"}
+          text_files = [p for p in files if p.suffix.lower() in text_ext]
+          contents = {}
+          for p in text_files:
+              try:
+                  contents[p] = p.read_text(errors="ignore")
+              except OSError:
+                  pass
+
+          lines = ["# Horizen source audit", "", f"- Files inspected: {len(files)}", f"- Text/source files: {len(text_files)}", ""]
+          manifests = [p for p in files if p.name == "AndroidManifest.xml"]
+          lines += ["## Android manifests", *([f"- {p}" for p in manifests] or ["- NOT FOUND"]), ""]
+          icon_files = [p for p in files if re.search(r"(ic_launcher|launcher|app_icon|logo)", p.name, re.I) and p.suffix.lower() in {".png", ".webp", ".xml", ".jpg"}]
+          lines += ["## Launcher/logo assets", *([f"- {p}" for p in icon_files] or ["- No conventionally named launcher/logo asset found"]), ""]
+          splash_hits = [(str(p), i + 1, line.strip()) for p, text in contents.items() for i, line in enumerate(text.splitlines()) if re.search(r"splash|windowSplashScreen|SplashScreen", line, re.I)]
+          lines += ["## Splash-screen references", *([f"- {p}:{n}: {line[:180]}" for p,n,line in splash_hits[:80]] or ["- No splash-screen reference found by static scan"]), ""]
+          categories = {
+              "Music playback": r"ExoPlayer|Media3|MediaPlayer|PlayerService|playback",
+              "Search": r"SearchView|SearchScreen|searchQuery|search\(",
+              "Playlists": r"Playlist|playlist",
+              "Recommendations": r"recommend|ForYou|Personaliz",
+              "Offline/download": r"download|offline|WorkManager|DownloadManager",
+              "Discord": r"discord",
+              "Last.fm": r"last\\.?fm|lastfm",
+              "Cast": r"CastSession|MediaRoute|chromecast|castOptions",
+              "Network/API": r"Retrofit|OkHttp|ktor|https?://|Authorization",
+              "Authentication": r"OAuth|OAuth2|FirebaseAuth|signInWith",
           }
-
-          for relative, imports in fixes.items():
-              path = Path(relative)
-              if not path.is_file():
-                  raise SystemExit(f"Expected source file missing: {path}")
-              content = path.read_text()
-              package_line = next((line for line in content.splitlines() if line.startswith("package ")), None)
-              if package_line is None:
-                  raise SystemExit(f"Package declaration missing: {path}")
-              missing = [item for item in imports if item not in content.splitlines()]
-              if missing:
-                  content = content.replace(package_line, package_line + "\n" + "\n".join(missing), 1)
-                  path.write_text(content)
-
-          for relative in [
-              "app/src/main/kotlin/com/metrolist/music/ui/onboarding/OnboardingScreen.kt",
-              "app/src/main/kotlin/com/metrolist/music/ui/profile/ProfileScreen.kt",
-          ]:
-              path = Path(relative)
-              if not path.is_file():
-                  raise SystemExit(f"Expected source file missing: {path}")
-              content = path.read_text()
-              content = content.replace("ExperimentalLayoutApi", "ExperimentalFoundationApi")
-              if "import androidx.compose.foundation.ExperimentalFoundationApi" not in content.splitlines():
-                  package_line = next((line for line in content.splitlines() if line.startswith("package ")), None)
-                  if package_line is None:
-                      raise SystemExit(f"Package declaration missing: {path}")
-                  content = content.replace(
-                      package_line,
-                      package_line + "\nimport androidx.compose.foundation.ExperimentalFoundationApi",
-                      1,
-                  )
-              path.write_text(content)
-              print(f"Applied legacy Compose opt-in compatibility: {path}")
+          lines += ["## Integration code indicators"]
+          for label, pattern in categories.items():
+              hits = [(str(p), i + 1) for p,text in contents.items() for i,line in enumerate(text.splitlines()) if re.search(pattern, line, re.I)]
+              lines.append(f"- {label}: {'code references found' if hits else 'no matching reference found'} ({len(hits)} matching lines)")
+              for p,n in hits[:5]:
+                  lines.append(f"  - {p}:{n}")
+          lines += ["", "## Important interpretation", "- Static matches prove only that related code/text exists; they do not prove a live service connection or working runtime behavior.", "- API credentials, OAuth callbacks, network reachability, playback behavior and device installation require separate runtime/device tests.", ""]
+          report = "\\n".join(lines)
+          Path("$GITHUB_WORKSPACE/audit-report/source-audit.md").write_text(report)
+          print(report)
+          if not manifests:
+              raise SystemExit("AndroidManifest.xml missing; refusing release.")
+          if not icon_files:
+              raise SystemExit("No recognizable launcher/logo asset found; refusing release pending branding verification.")
+          if not splash_hits:
+              raise SystemExit("No splash-screen implementation/reference found; refusing release pending splash verification.")
           PY
 
-      - name: Build debug APK
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+      - name: Make Gradle wrapper executable
+        working-directory: ${{ steps.source.outputs.dir }}
+        run: chmod +x ./gradlew
 
-      - name: Collect FOSS APK only
+      - name: Validate Gradle configuration
+        working-directory: ${{ steps.source.outputs.dir }}
+        run: ./gradlew --no-daemon tasks --all
+
+      - name: Run unit tests
+        working-directory: ${{ steps.source.outputs.dir }}
+        run: ./gradlew --no-daemon test
+
+      - name: Build Android debug APKs
+        working-directory: ${{ steps.source.outputs.dir }}
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Verify APK package metadata and collect FOSS build
         shell: bash
+        working-directory: ${{ steps.source.outputs.dir }}
         run: |
           set -euo pipefail
-          mkdir -p apk-output
-          FOSS_APK=$(find extracted -type f -path '*/build/outputs/apk/*' -name 'app-foss-debug.apk' -print -quit)
-          if [ -z "$FOSS_APK" ]; then
-            echo "FOSS debug APK was not produced."
-            find extracted -type f -path '*/build/outputs/apk/*' -name '*.apk' -print
+          mkdir -p "$GITHUB_WORKSPACE/release"
+          APK="$(find . -type f -path '*/build/outputs/apk/*' -name 'app-foss-debug.apk' -print -quit)"
+          if [ -z "$APK" ]; then
+            echo "::error::FOSS APK not produced. Available APKs:"
+            find . -type f -path '*/build/outputs/apk/*' -name '*.apk' -print
             exit 1
           fi
-          cp "$FOSS_APK" apk-output/Horizen-FOSS-debug.apk
-          ls -lh apk-output/Horizen-FOSS-debug.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -1)"
+          if [ -z "$AAPT" ]; then
+            echo "::error::aapt not found; cannot verify APK metadata."
+            exit 1
+          fi
+          "$AAPT" dump badging "$APK" | tee "$GITHUB_WORKSPACE/release/apk-metadata.txt"
+          grep -q "^package:" "$GITHUB_WORKSPACE/release/apk-metadata.txt"
+          grep -q "^application-label:" "$GITHUB_WORKSPACE/release/apk-metadata.txt"
+          cp "$APK" "$GITHUB_WORKSPACE/release/Horizen-FOSS-debug.apk"
+          sha256sum "$GITHUB_WORKSPACE/release/Horizen-FOSS-debug.apk" | tee "$GITHUB_WORKSPACE/release/SHA256SUMS.txt"
 
-      - name: Upload FOSS APK artifact
+      - name: Upload audit report even when checks fail
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Horizen-FOSS-APK
-          path: apk-output/Horizen-FOSS-debug.apk
+          name: Horizen-Audit-Report
+          path: audit-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload verified FOSS APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Horizen-Release-FOSS
+          path: release/
           if-no-files-found: error
           retention-days: 14
