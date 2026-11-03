@@ -77,6 +77,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
+          import os
 
           root = Path(".")
           files = [p for p in root.rglob("*") if p.is_file() and ".gradle" not in p.parts and "build" not in p.parts]
@@ -116,7 +117,7 @@ jobs:
                   lines.append(f"  - {p}:{n}")
           lines += ["", "## Important interpretation", "- Static matches prove only that related code/text exists; they do not prove a live service connection or working runtime behavior.", "- API credentials, OAuth callbacks, network reachability, playback behavior and device installation require separate runtime/device tests.", ""]
           report = "\\n".join(lines)
-          Path("$GITHUB_WORKSPACE/audit-report/source-audit.md").write_text(report)
+          Path(os.environ["GITHUB_WORKSPACE"], "audit-report", "source-audit.md").write_text(report)
           print(report)
           if not manifests:
               raise SystemExit("AndroidManifest.xml missing; refusing release.")
