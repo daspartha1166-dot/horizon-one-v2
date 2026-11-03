@@ -41,6 +41,22 @@ jobs:
           accept-android-sdk-licenses: true
           packages: platform-tools
 
+      - name: Create Android debug keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v \\
+              -keystore "$HOME/.android/debug.keystore" \\
+              -storepass android \\
+              -keypass android \\
+              -alias androiddebugkey \\
+              -dname "CN=Android Debug,O=Android,C=US" \\
+              -keyalg RSA -keysize 2048 -validity 10000
+          fi
+          test -s "$HOME/.android/debug.keystore"
+
       - name: Validate and extract uploaded source
         id: source
         shell: bash
