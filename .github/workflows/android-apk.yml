@@ -94,7 +94,7 @@ jobs:
                           raise SystemExit(f"Package declaration missing in {name}")
                       lines.insert(package_index + 1, "")
                       lines.insert(package_index + 2, imp)
-              p.write_text("\\n".join(lines) + "\\n")
+              p.write_text(chr(10).join(lines) + chr(10))
               print(f"Patched imports: {name}")
           PY
 
