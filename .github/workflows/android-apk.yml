@@ -67,6 +67,37 @@ jobs:
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Source project: $PROJECT_DIR"
 
+      - name: Apply verified Kotlin import fixes
+        working-directory: ${{ steps.source.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          targets = {
+              "app/src/main/kotlin/com/metrolist/music/ui/detail/AlbumScreen.kt": ["import androidx.compose.ui.unit.dp"],
+              "app/src/main/kotlin/com/metrolist/music/ui/detail/LocalPlaylistScreen.kt": ["import androidx.compose.ui.unit.dp"],
+              "app/src/main/kotlin/com/metrolist/music/ui/detail/PlaylistScreen.kt": ["import androidx.compose.ui.unit.dp"],
+              "app/src/main/kotlin/com/metrolist/music/ui/onboarding/OnboardingScreen.kt": ["import androidx.compose.foundation.layout.ExperimentalLayoutApi"],
+              "app/src/main/kotlin/com/metrolist/music/ui/profile/ProfileScreen.kt": ["import androidx.compose.foundation.layout.ExperimentalLayoutApi"],
+          }
+          for name, required in targets.items():
+              p = Path(name)
+              if not p.is_file():
+                  raise SystemExit(f"Expected Kotlin source file missing: {name}")
+              lines = p.read_text().splitlines()
+              lines = [line for line in lines if not ("ExperimentalLayoutApi" in line and line.lstrip().startswith("import "))]
+              for imp in required:
+                  if imp not in lines:
+                      package_index = next((i for i, line in enumerate(lines) if line.startswith("package ")), None)
+                      if package_index is None:
+                          raise SystemExit(f"Package declaration missing in {name}")
+                      lines.insert(package_index + 1, "")
+                      lines.insert(package_index + 2, imp)
+              p.write_text("\\n".join(lines) + "\\n")
+              print(f"Patched imports: {name}")
+          PY
+
       - name: Audit source structure, branding and integrations
         id: audit
         working-directory: ${{ steps.source.outputs.dir }}
